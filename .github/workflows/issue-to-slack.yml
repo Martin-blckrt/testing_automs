@@ -2,7 +2,7 @@ name: Issue → Slack (BUG REQUESTS on creation)
 
 on:
   issues:
-    types: [opened]  # seulement à la création
+    types: [opened, labeled]
 
 jobs:
   notify_on_create_bug_requests:
@@ -14,7 +14,7 @@ jobs:
         id: guard
         env:
           EVENT_JSON: ${{ toJson(github.event) }}
-          CREATION_LABEL: "BUG REQUESTS"   # <- change ici si besoin
+          CREATION_LABEL: "bug"   # <- change ici si besoin
         run: |
           HAS_LABEL=$(jq -r --arg WANT "$CREATION_LABEL" '.issue.labels[].name | select(. == $WANT)' <<<"$EVENT_JSON" | wc -l)
           if [ "$HAS_LABEL" -ge 1 ]; then
