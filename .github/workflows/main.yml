@@ -1,0 +1,156 @@
+name: Issues → Slack (BUG REQUESTS + Status updates)
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled, edited]  # creation + changements de labels (statuts) + edit du corps/titre si utile
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────────
+  # PHASE 1 — Issue créée avec le label "BUG REQUESTS" => notifier Slack
+  # ──────────────────────────────────────────────────────────────────────────────
+  notify_on_create_bug_requests:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    if: github.event.action == 'opened'
+    steps:
+      - name: Check "BUG REQUESTS" label at creation
+        id: guard
+        env:
+          EVENT_JSON: ${{ toJson(github.event) }}
+          CREATION_LABEL: "BUG REQUESTS"
+        run: |
+          HAS_LABEL=$(jq -r --arg WANT "$CREATION_LABEL" '.issue.labels[].name | select(. == $WANT)' <<<"$EVENT_JSON" | wc -l)
+          if [ "$HAS_LABEL" -ge 1 ]; then
+            echo "send=yes" >> $GITHUB_OUTPUT
+          else
+            echo "send=no" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack (creation with BUG REQUESTS)
+        if: steps.guard.outputs.send == 'yes'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          EVENT_JSON: ${{ toJson(github.event) }}
+          REPO: ${{ github.repository }}
+        run: |
+          TITLE=$(jq -r '.issue.title' <<<"$EVENT_JSON")
+          URL=$(jq -r '.issue.html_url' <<<"$EVENT_JSON")
+          AUTHOR=$(jq -r '.issue.user.login' <<<"$EVENT_JSON")
+          LABELS=$(jq -r '[.issue.labels[].name] | join(", ")' <<<"$EVENT_JSON")
+          BODY=$(jq -r '.issue.body // ""' <<<"$EVENT_JSON" | head -c 700)
+
+          jq -n \
+            --arg repo "$REPO" \
+            --arg title "$TITLE" \
+            --arg url "$URL" \
+            --arg author "$AUTHOR" \
+            --arg labels "$LABELS" \
+            --arg body "$BODY" \
+            '{
+              text: "Nouvelle BUG REQUEST créée",
+              blocks: [
+                { "type":"section", "text":{"type":"mrkdwn", "text":":beetle: *Nouvelle BUG REQUEST*"} },
+                { "type":"section", "text":{"type":"mrkdwn", "text":"*Repo:* `\($repo)`\n*Titre:* <\($url)|\($title)>\n*Auteur:* \($author)\n*Labels:* \($labels)"} },
+                { "type":"section", "text":{"type":"mrkdwn", "text":"*Description:*\n```\($body)```"} }
+              ]
+            }' \
+          | curl -s -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK_URL" -o /dev/stderr -w "HTTP %{http_code}\n"
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # PHASE 2 — Updates de statut via labels "status:*" => notifier Slack
+  # - si on ajoute/retire un label commençant par "status:", on notifie
+  # - si on édite et que le jeu de labels status a changé (rare via "edited"), on notifie aussi
+  # ──────────────────────────────────────────────────────────────────────────────
+  notify_on_status_label_change:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    # on s'active pour labeled/unlabeled; pour "edited", on notifie si un label status est présent (fallback simple)
+    if: |
+      github.event.action == 'labeled' || 
+      github.event.action == 'unlabeled' || 
+      github.event.action == 'edited'
+    steps:
+      - name: Detect status label change
+        id: status_change
+        env:
+          EVENT_JSON: ${{ toJson(github.event) }}
+          ACTION: ${{ github.event.action }}
+          STATUS_PREFIX: "status:"   # <- convention de nommage recommandée pour les statuts
+        run: |
+          set -e
+
+          # Détecter le label impliqué pour labeled/unlabeled
+          CHANGED_LABEL=$(jq -r '.label.name // ""' <<<"$EVENT_JSON")
+          MATCH_CHANGED="no"
+          if [ "$ACTION" = "labeled" ] || [ "$ACTION" = "unlabeled" ]; then
+            case "$CHANGED_LABEL" in
+              $STATUS_PREFIX*) MATCH_CHANGED="yes" ;;
+              *) MATCH_CHANGED="no" ;;
+            esac
+          fi
+
+          # Pour "edited", on notifie si au moins un label status est présent (fallback raisonnable)
+          ANY_STATUS_PRESENT=$(jq -r --arg PFX "$STATUS_PREFIX" \
+            '[.issue.labels[].name | select(startswith($PFX))] | length' <<<"$EVENT_JSON")
+
+          if { [ "$ACTION" = "labeled" ] || [ "$ACTION" = "unlabeled" ]; } && [ "$MATCH_CHANGED" = "yes" ]; then
+            echo "should_notify=yes" >> $GITHUB_OUTPUT
+            echo "changed_label=$CHANGED_LABEL" >> $GITHUB_OUTPUT
+            echo "change_type=$ACTION" >> $GITHUB_OUTPUT
+          elif [ "$ACTION" = "edited" ] && [ "$ANY_STATUS_PRESENT" -ge 1 ]; then
+            echo "should_notify=yes" >> $GITHUB_OUTPUT
+            echo "changed_label=" >> $GITHUB_OUTPUT
+            echo "change_type=edited" >> $GITHUB_OUTPUT
+          else
+            echo "should_notify=no" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack (status update)
+        if: steps.status_change.outputs.should_notify == 'yes'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          EVENT_JSON: ${{ toJson(github.event) }}
+          REPO: ${{ github.repository }}
+          CHANGED_LABEL: ${{ steps.status_change.outputs.changed_label }}
+          CHANGE_TYPE: ${{ steps.status_change.outputs.change_type }}
+        run: |
+          TITLE=$(jq -r '.issue.title' <<<"$EVENT_JSON")
+          URL=$(jq -r '.issue.html_url' <<<"$EVENT_JSON")
+          AUTHOR=$(jq -r '.issue.user.login' <<<"$EVENT_JSON")
+          LABELS=$(jq -r '[.issue.labels[].name] | join(", ")' <<<"$EVENT_JSON")
+
+          # Joli libellé d'action
+          case "$CHANGE_TYPE" in
+            labeled)   ACTION_TXT=":label: *Statut ajouté*" ;;
+            unlabeled) ACTION_TXT=":scissors: *Statut retiré*" ;;
+            edited)    ACTION_TXT=":pencil2: *Issue éditée (statut potentiellement modifié)*" ;;
+            *)         ACTION_TXT=":information_source: *Mise à jour de statut*" ;;
+          esac
+
+          # Détail du statut concerné si connu
+          if [ -n "$CHANGED_LABEL" ]; then
+            STATUS_LINE="*Label statut:* \`$CHANGED_LABEL\`"
+          else
+            STATUS_LINE="*Labels actuels:* $LABELS"
+          fi
+
+          jq -n \
+            --arg repo "$REPO" \
+            --arg title "$TITLE" \
+            --arg url "$URL" \
+            --arg author "$AUTHOR" \
+            --arg action "$ACTION_TXT" \
+            --arg status_line "$STATUS_LINE" \
+            --arg labels "$LABELS" \
+            '{
+              text: "Mise à jour du statut de l’issue",
+              blocks: [
+                { "type":"section", "text":{"type":"mrkdwn", "text":$action} },
+                { "type":"section", "text":{"type":"mrkdwn", "text":"*Repo:* `\($repo)`\n*Titre:* <\($url)|\($title)>\n*Auteur:* \($author)"} },
+                { "type":"section", "text":{"type":"mrkdwn", "text":$status_line} },
+                { "type":"context", "elements":[{ "type":"mrkdwn", "text":"*Tous les labels:* \($labels)"}] }
+              ]
+            }' \
+          | curl -s -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK_URL" -o /dev/stderr -w "HTTP %{http_code}\n"
