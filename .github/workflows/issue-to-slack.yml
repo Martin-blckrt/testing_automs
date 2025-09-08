@@ -1,0 +1,65 @@
+name: Notify Slack on new issue with status (Webhook)
+
+on:
+  issues:
+    types: [opened, labeled]  # à la création OU quand on ajoute un label
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    steps:
+      - name: Check status label
+        id: guard
+        env:
+          ACTION: ${{ github.event.action }}
+          WANT: "status:ready"        # <<< change ici le label "statut" attendu
+          EVENT_JSON: ${{ toJson(github.event) }}
+        run: |
+          # Récupère tous les labels de l'issue depuis l'événement
+          HAS_LABEL=$(jq -r --arg WANT "$WANT" '.issue.labels[].name | select(. == $WANT)' <<<"$EVENT_JSON" | wc -l)
+
+          # Cas particulier: si l’événement est "labeled", on regarde le label tout juste posé
+          if [ "$ACTION" = "labeled" ]; then
+            CUR_LABEL=$(jq -r '.label.name' <<<"$EVENT_JSON")
+            if [ "$CUR_LABEL" = "$WANT" ]; then HAS_LABEL=1; fi
+          fi
+
+          if [ "$HAS_LABEL" -ge 1 ]; then
+            echo "send=yes" >> $GITHUB_OUTPUT
+          else
+            echo "send=no" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack webhook
+        if: steps.guard.outputs.send == 'yes'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          EVENT_JSON: ${{ toJson(github.event) }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Données utiles
+          TITLE=$(jq -r '.issue.title' <<<"$EVENT_JSON")
+          URL=$(jq -r '.issue.html_url' <<<"$EVENT_JSON")
+          AUTHOR=$(jq -r '.issue.user.login' <<<"$EVENT_JSON")
+          LABELS=$(jq -r '[.issue.labels[].name] | join(", ")' <<<"$EVENT_JSON")
+          BODY=$(jq -r '.issue.body // ""' <<<"$EVENT_JSON" | head -c 700)
+
+          # Construire le payload (blocks) en échappant correctement le texte
+          jq -n \
+            --arg repo "$REPO" \
+            --arg title "$TITLE" \
+            --arg url "$URL" \
+            --arg author "$AUTHOR" \
+            --arg labels "$LABELS" \
+            --arg body "$BODY" \
+            '{
+              text: "Nouvelle issue avec statut requis",
+              blocks: [
+                { "type":"section", "text":{"type":"mrkdwn", "text":":rotating_light: *Nouvelle issue avec statut requis*"} },
+                { "type":"section", "text":{"type":"mrkdwn", "text":"*Repo:* `\($repo)`\n*Titre:* <\($url)|\($title)>\n*Auteur:* \($author)\n*Labels:* \($labels)"} },
+                { "type":"section", "text":{"type":"mrkdwn", "text":"*Résumé:*\n```\($body)```"} }
+              ]
+            }' \
+          | curl -s -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK_URL" -o /dev/stderr -w "HTTP %{http_code}\n"
