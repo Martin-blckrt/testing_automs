@@ -1,62 +1,41 @@
-name: Auto-label "bug" when Project Status = BUG REQUESTS
+name: Auto-label BUG from Project status
 
 on:
-  projects_v2_item:
-    types: [created, edited]
+  issues:
+    types: [opened, edited]
 
 jobs:
-  add_bug_label_when_status_is_bug_requests:
-    # On ne traite que les items liés à des Issues
-    if: ${{ github.event.projects_v2_item.content_type == 'Issue' }}
+  add-bug-if-status:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       issues: write
-      repository-projects: read   # utile pour interroger Projects v2 via GraphQL
+      repository-projects: read
     steps:
-      - name: Inspect Project item status via GraphQL
-        id: inspect
+      - name: Check project status for this issue
+        id: check
         env:
-          GH_TOKEN: ${{ github.token }}   # gh lit GH_TOKEN par défaut
-          ITEM_NODE_ID: ${{ github.event.projects_v2_item.node_id }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_ID: ${{ github.event.issue.node_id }}
         run: |
-          # Récupère Status + coordonnées de l'issue (owner/repo/number)
           RESP=$(gh api graphql -f query='
-          query($item:ID!){
-            node(id:$item){
-              ... on ProjectV2Item {
-                fieldValueByName(name:"Status"){
-                  ... on ProjectV2ItemFieldSingleSelectValue { name }
-                }
-                content{
-                  __typename
-                  ... on Issue {
-                    number
-                    repository { name owner { login } }
+          query($id:ID!){
+            node(id:$id){
+              ... on Issue {
+                projectItems(first:10){
+                  nodes{
+                    fieldValueByName(name:"Status"){
+                      ... on ProjectV2ItemFieldSingleSelectValue { name }
+                    }
                   }
                 }
               }
             }
-          }' -F item="$ITEM_NODE_ID")
+          }' -F id="$ISSUE_ID")
 
-          STATUS=$(jq -r '.data.node.fieldValueByName.name // ""' <<<"$RESP")
-          OWNER=$(jq -r '.data.node.content.repository.owner.login' <<<"$RESP")
-          REPO=$(jq -r  '.data.node.content.repository.name'         <<<"$RESP")
-          NUMBER=$(jq -r '.data.node.content.number'                <<<"$RESP")
+          STATUS=$(jq -r '.data.node.projectItems.nodes[].fieldValueByName.name // empty' <<<"$RESP")
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
 
-          echo "status=$STATUS"   >> "$GITHUB_OUTPUT"
-          echo "owner=$OWNER"     >> "$GITHUB_OUTPUT"
-          echo "repo=$REPO"       >> "$GITHUB_OUTPUT"
-          echo "number=$NUMBER"   >> "$GITHUB_OUTPUT"
-
-      - name: Add label "bug" to the issue
-        if: ${{ steps.inspect.outputs.status == 'BUG REQUESTS' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OWNER: ${{ steps.inspect.outputs.owner }}
-          REPO: ${{ steps.inspect.outputs.repo }}
-          NUMBER: ${{ steps.inspect.outputs.number }}
+      - name: Add bug label
+        if: ${{ steps.check.outputs.status == 'BUG REQUESTS' }}
         run: |
-          gh api -X POST \
-            repos/$OWNER/$REPO/issues/$NUMBER/labels \
-            -f labels='["bug"]'
+          gh issue edit ${{ github.event.issue.number }} --add-label bug
