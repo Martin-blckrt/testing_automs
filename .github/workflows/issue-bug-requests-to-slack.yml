@@ -1,35 +1,48 @@
-name: Issue → Slack (BUG REQUESTS on creation)
+name: Issue → Slack (BUG REQUESTS)
 
 on:
   issues:
-    types: [opened]  # seulement à la création
+    types: [opened, labeled]  # écoute la création ET l'ajout de label
 
 jobs:
-  notify_on_create_bug_requests:
+  notify_bug_requests:
     runs-on: ubuntu-latest
     permissions:
       issues: read
     steps:
-      - name: Check "BUG REQUESTS" label at creation
+      - name: Check BUG REQUESTS (on opened or labeled)
         id: guard
         env:
           EVENT_JSON: ${{ toJson(github.event) }}
-          CREATION_LABEL: "BUG REQUESTS"   # <- change ici si besoin
+          ACTION: ${{ github.event.action }}
+          TARGET_LABEL: "BUG REQUESTS"
         run: |
-          HAS_LABEL=$(jq -r --arg WANT "$CREATION_LABEL" '.issue.labels[].name | select(. == $WANT)' <<<"$EVENT_JSON" | wc -l)
-          if [ "$HAS_LABEL" -ge 1 ]; then
-            echo "send=yes" >> $GITHUB_OUTPUT
-          else
-            echo "send=no" >> $GITHUB_OUTPUT
+          set -e
+          SEND=no
+
+          if [ "$ACTION" = "opened" ]; then
+            # Cas 1: présent dès la création
+            COUNT=$(jq -r '.issue.labels[].name' <<<"$EVENT_JSON" | grep -Fx "BUG REQUESTS" | wc -l)
+            [ "$COUNT" -ge 1 ] && SEND=yes
+          elif [ "$ACTION" = "labeled" ]; then
+            # Cas 2: label tout juste ajouté
+            CUR=$(jq -r '.label.name' <<<"$EVENT_JSON")
+            [ "$CUR" = "BUG REQUESTS" ] && SEND=yes
           fi
 
-      - name: Send Slack (creation with BUG REQUESTS)
+          echo "send=$SEND" >> "$GITHUB_OUTPUT"
+
+      - name: Send Slack (BUG REQUESTS)
         if: steps.guard.outputs.send == 'yes'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           EVENT_JSON: ${{ toJson(github.event) }}
           REPO: ${{ github.repository }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "❌ Secret SLACK_WEBHOOK_URL manquant"; exit 1
+          fi
+
           TITLE=$(jq -r '.issue.title' <<<"$EVENT_JSON")
           URL=$(jq -r '.issue.html_url' <<<"$EVENT_JSON")
           AUTHOR=$(jq -r '.issue.user.login' <<<"$EVENT_JSON")
@@ -44,11 +57,11 @@ jobs:
             --arg labels "$LABELS" \
             --arg body "$BODY" \
             '{
-              text: "Nouvelle BUG REQUEST créée",
+              text: "Nouvelle BUG REQUEST",
               blocks: [
                 { "type":"section", "text":{"type":"mrkdwn", "text":":beetle: *Nouvelle BUG REQUEST*"} },
                 { "type":"section", "text":{"type":"mrkdwn", "text":"*Repo:* `\($repo)`\n*Titre:* <\($url)|\($title)>\n*Auteur:* \($author)\n*Labels:* \($labels)"} },
                 { "type":"section", "text":{"type":"mrkdwn", "text":"*Description:*\n```\($body)```"} }
               ]
             }' \
-          | curl -s -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK_URL" -o /dev/stderr -w "HTTP %{http_code}\n"
+          | curl -s -X POST -H 'Content-type: application/json' --data @- -w " HTTP_CODE:%{http_code}\n" "$SLACK_WEBHOOK_URL"
