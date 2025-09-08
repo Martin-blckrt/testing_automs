@@ -1,0 +1,161 @@
+name: Project V2 Status → Slack (BUG REQUESTS)
+
+on:
+  projects_v2_item:
+    types: [created, edited]   # création d'item dans le projet, ou modification d'un champ (ex. Status)
+
+jobs:
+  notify_when_status_is_bug_requests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      projects: read   # permission "Projects" (legacy) – suffisant pour GraphQL Projects v2 via GITHUB_TOKEN
+
+    steps:
+      - name: Install deps (jq + gh)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          type gh >/dev/null 2>&1 || (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+            && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+            && sudo apt-get update -y && sudo apt-get install -y gh)
+
+      - name: Dump event (debug)
+        env:
+          EVENT_JSON: ${{ toJson(github.event) }}
+        run: |
+          echo "== projects_v2_item event =="
+          echo "$EVENT_JSON" | jq -C .
+
+      - name: Read Project Item via GraphQL
+        id: read_item
+        env:
+          EVENT_JSON: ${{ toJson(github.event) }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          # Récupération robuste du node_id de l'item Projet v2
+          NODE_ID=$(jq -r '
+            .projects_v2_item.node_id //            # format courant
+            .projects_v2_item.id //                 # fallback possible selon payload
+            empty
+          ' <<<"$EVENT_JSON")
+
+          if [ -z "$NODE_ID" ]; then
+            echo "❌ Impossible de déterminer node_id depuis l'événement."
+            echo "$EVENT_JSON" | jq -C .
+            exit 1
+          fi
+
+          echo "Using ProjectV2Item node_id: $NODE_ID"
+
+          # Requête GraphQL : on lit le champ Status + le contenu lié (Issue/PR)
+          QUERY='
+          query($id:ID!) {
+            node(id: $id) {
+              __typename
+              ... on ProjectV2Item {
+                id
+                project { title url: resourcePath }
+                fieldValueByName(name: "Status") {
+                  __typename
+                  ... on ProjectV2ItemFieldSingleSelectValue { name }
+                }
+                content {
+                  __typename
+                  ... on Issue {
+                    id number title url body
+                    repository { nameWithOwner }
+                    author { login }
+                  }
+                  ... on PullRequest {
+                    id number title url body
+                    repository { nameWithOwner }
+                    author { login }
+                  }
+                }
+              }
+            }
+          }'
+
+          RESP=$(gh api graphql -f query="$QUERY" -F id="$NODE_ID")
+          echo "$RESP" | jq -C .
+
+          # Parse des champs utiles
+          ITEM_TYPENAME=$(jq -r '.data.node.__typename // ""' <<<"$RESP")
+          CONTENT_TYPENAME=$(jq -r '.data.node.content.__typename // ""' <<<"$RESP")
+          STATUS_NAME=$(jq -r '.data.node.fieldValueByName.name // ""' <<<"$RESP")
+
+          # Infos Issue (si applicable)
+          ISSUE_TITLE=$(jq -r '.data.node.content.title // ""' <<<"$RESP")
+          ISSUE_URL=$(jq -r '.data.node.content.url // ""' <<<"$RESP")
+          ISSUE_BODY=$(jq -r '.data.node.content.body // ""' <<<"$RESP" | head -c 700)
+          ISSUE_REPO=$(jq -r '.data.node.content.repository.nameWithOwner // ""' <<<"$RESP")
+          ISSUE_AUTHOR=$(jq -r '.data.node.content.author.login // ""' <<<"$RESP")
+
+          echo "Debug: ITEM_TYPENAME=$ITEM_TYPENAME CONTENT_TYPENAME=$CONTENT_TYPENAME STATUS_NAME=$STATUS_NAME"
+
+          # Décision : on notifie uniquement si CONTENT = Issue ET Status = "BUG REQUESTS"
+          SEND="no"
+          if [ "$CONTENT_TYPENAME" = "Issue" ] && [ "$STATUS_NAME" = "BUG REQUESTS" ]; then
+            SEND="yes"
+          fi
+
+          {
+            echo "send=$SEND"
+            echo "title=$ISSUE_TITLE"
+            echo "url=$ISSUE_URL"
+            echo "repo=$ISSUE_REPO"
+            echo "author=$ISSUE_AUTHOR"
+            # body potentiellement long, on ne le renvoie pas ici, on le regénère plus tard
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send Slack (Status = BUG REQUESTS)
+        if: steps.read_item.outputs.send == 'yes'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          EVENT_JSON: ${{ toJson(github.event) }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ steps.read_item.outputs.title }}
+          URL: ${{ steps.read_item.outputs.url }}
+          REPO: ${{ steps.read_item.outputs.repo }}
+          AUTHOR: ${{ steps.read_item.outputs.author }}
+        run: |
+          set -e
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "❌ Secret SLACK_WEBHOOK_URL manquant"; exit 1
+          fi
+
+          # Reconstituer le body pour l'affichage (optionnel)
+          NODE_ID=$(jq -r '.projects_v2_item.node_id // .projects_v2_item.id // empty' <<<"$EVENT_JSON")
+          QUERY='
+          query($id:ID!) {
+            node(id: $id) {
+              ... on ProjectV2Item {
+                content {
+                  ... on Issue { body }
+                }
+              }
+            }
+          }'
+          BODY=$(gh api graphql -f query="$QUERY" -F id="$NODE_ID" | jq -r '.data.node.content.body // ""' | head -c 700)
+
+          jq -n \
+            --arg repo "$REPO" \
+            --arg title "$TITLE" \
+            --arg url "$URL" \
+            --arg author "$AUTHOR" \
+            --arg body "$BODY" \
+            '{
+              text: "Issue marquée en Status: BUG REQUESTS",
+              blocks: [
+                { "type":"section", "text":{"type":"mrkdwn", "text":":beetle: *Status set: BUG REQUESTS*"} },
+                { "type":"section", "text":{"type":"mrkdwn", "text":"*Repo:* `\($repo)`\n*Titre:* <\($url)|\($title)>\n*Auteur:* \($author)"} },
+                { "type":"section", "text":{"type":"mrkdwn", "text":"*Résumé:*\n```\($body)```"} }
+              ]
+            }' \
+          | curl -s -X POST -H 'Content-type: application/json' --data @- -w " HTTP_CODE:%{http_code}\n" "$SLACK_WEBHOOK_URL"
