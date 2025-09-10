@@ -28,9 +28,9 @@ jobs:
 
           from: "Ticket Bot <${{ secrets.SMTP_USERNAME }}>"
           to: ${{ secrets.TICKETS_TO }}
-          reply_to: "support+issue-${{ github.event.issue.number }}@tondomaine.com"
+          reply_to: ${{ secrets.SMTP_USERNAME }}
 
-          subject: "[Ticket #${{ github.event.issue.number }}] Nouveau commentaire par @${{ github.actor }}"
+          subject: "Coucou Océ: mail envoyé automatiquement à partir d'une issue #${{ github.event.issue.number }}"
           html_body: |
             **Commentateur:** @${{ github.actor }}
             **Issue:** #${{ github.event.issue.number }} – ${{ github.event.issue.title }}
