@@ -84,11 +84,6 @@ jobs:
 
           subject: ${{ steps.filter.outputs.subject }}
           html_body: |
-            **Commentateur:** @${{ github.actor }}
-            **Issue:** #${{ github.event.issue.number }} – ${{ github.event.issue.title }}
-            **URL:** ${{ github.event.comment.html_url }}
-
-            ---
 
             ${{ steps.filter.outputs.body }}
           convert_markdown: true
