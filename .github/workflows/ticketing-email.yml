@@ -24,11 +24,8 @@ jobs:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           secure: ${{ secrets.SMTP_PORT == '465' }}
-          username: ${{ secrets.SMPT_USERNAME || secrets.SMTP_USERNAME }}
+          username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-
-          # Option B (alternative) : une seule connection_url
-          # connection_url: ${{ secrets.MAIL_CONNECTION }}
 
           from: "Ticket Bot <${{ secrets.SMTP_USERNAME }}>"
           to: ${{ secrets.TICKETS_TO }}
@@ -75,4 +72,3 @@ jobs:
 
             ${{ github.event.comment.body }}
           convert_markdown: true
-          content_type: text/html
