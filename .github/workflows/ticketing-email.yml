@@ -15,38 +15,6 @@ jobs:
       # https://github.com/dawidd6/action-send-mail
       # ------------------------------------------------
 
-      # Envoi quand c’est un événement "issues"
-      - name: Send email (issue event)
-        if: ${{ github.event_name == 'issues' }}
-        uses: dawidd6/action-send-mail@v6
-        with:
-          # Option A: paramètres SMTP séparés
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          secure: ${{ secrets.SMTP_PORT == '465' }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-
-          from: "Ticket Bot <${{ secrets.SMTP_USERNAME }}>"
-          to: ${{ secrets.TICKETS_TO }}
-          reply_to: "support+issue-${{ github.event.issue.number }}@tondomaine.com"
-
-          subject: "[Ticket #${{ github.event.issue.number }}] ${{ github.event.issue.title }} — ${{ github.event.action }}"
-          # Corps en Markdown auto-converti en HTML
-          html_body: |
-            **Event:** `${{ github.event.action }}`
-            **Repo:** `${{ github.repository }}`
-            **Issue:** #${{ github.event.issue.number }} – ${{ github.event.issue.title }}
-            **URL:** ${{ github.event.issue.html_url }}
-            **Auteur:** @${{ github.actor }}
-
-            ---
-
-            ${{ github.event.issue.body }}
-          convert_markdown: true
-          # recommandé avec convert_markdown
-          content_type: text/html
-
       # Envoi quand c’est un commentaire d’issue
       - name: Send email (issue_comment event)
         if: ${{ github.event_name == 'issue_comment' }}
