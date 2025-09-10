@@ -11,13 +11,67 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Version actuelle recommandée (v6, publiée en 2025)
-      # https://github.com/dawidd6/action-send-mail
-      # ------------------------------------------------
-
-      # Envoi quand c’est un commentaire d’issue
-      - name: Send email (issue_comment event)
+      # --------- Parse "mail:" / "objet:" puis corps ----------
+      - name: Parse comment (mail/objet)
         if: ${{ github.event_name == 'issue_comment' }}
+        id: filter
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const core = require('@actions/core');
+
+            const raw = context.payload.comment?.body || "";
+            const lines = raw.split(/\r?\n/);
+
+            // Cherche les directives "mail:" et "objet:" dans les ~10 premières lignes non vides
+            let mailLineIdx = -1, objetLineIdx = -1;
+            for (let i = 0; i < Math.min(lines.length, 10); i++) {
+              const t = lines[i].trim();
+              if (!t) continue;
+              if (mailLineIdx === -1 && /^mail\s*:/i.test(t)) { mailLineIdx = i; continue; }
+              if (objetLineIdx === -1 && /^(objet|sujet|subject)\s*:/i.test(t)) { objetLineIdx = i; continue; }
+              if (mailLineIdx !== -1 || objetLineIdx !== -1) break; // on s'arrête dès qu'on a trouvé une directive
+            }
+
+            if (mailLineIdx === -1) {
+              core.setOutput('send', 'false');
+              core.info('Aucune ligne "mail:" trouvée → pas d\'envoi.');
+              return;
+            }
+
+            const getVal = (line) =>
+              line.split(/:/).slice(1).join(':').trim().replace(/^["'](.*)["']$/, '$1');
+
+            const destRaw = getVal(lines[mailLineIdx] || "");
+            const subjectRaw = objetLineIdx !== -1 ? getVal(lines[objetLineIdx] || "") : "";
+
+            // Corps = tout après la dernière directive (mail/objet), blancs initiaux retirés
+            const startBody = Math.max(mailLineIdx, objetLineIdx) + 1;
+            const body = lines.slice(startBody).join('\n').trim() || '(pas de contenu)';
+
+            // Parse des emails (séparés par virgule, point-virgule ou espace)
+            const splitEmails = (s) => s.split(/[,\s;]+/).map(x => x.trim()).filter(Boolean);
+            const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            const to = Array.from(new Set(splitEmails(destRaw).filter(e => emailRe.test(e))));
+
+            if (!to.length) {
+              core.setOutput('send', 'false');
+              core.info('Aucun destinataire valide dans "mail:" → pas d\'envoi.');
+              return;
+            }
+
+            const iss = context.payload.issue;
+            const actor = context.actor;
+            const defaultSubject = `[Ticket #${iss?.number}] Commentaire par @${actor}`;
+
+            core.setOutput('send', 'true');
+            core.setOutput('to', to.join(','));
+            core.setOutput('subject', subjectRaw || defaultSubject);
+            core.setOutput('body', body);
+
+      # --------- Envoi si directive valide ----------
+      - name: Send email (issue_comment event)
+        if: ${{ github.event_name == 'issue_comment' && steps.filter.outputs.send == 'true' }}
         uses: dawidd6/action-send-mail@v6
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
@@ -27,10 +81,10 @@ jobs:
           password: ${{ secrets.SMTP_PASSWORD }}
 
           from: "Ticket Bot <${{ secrets.SMTP_USERNAME }}>"
-          to: ${{ secrets.TICKETS_TO }}
-          reply_to: ${{ secrets.SMTP_USERNAME }}
+          to: ${{ steps.filter.outputs.to }}
+          reply_to: "support+issue-${{ github.event.issue.number }}@tondomaine.com"
 
-          subject: "Coucou Océ: mail envoyé automatiquement à partir d'une issue #${{ github.event.issue.number }}"
+          subject: ${{ steps.filter.outputs.subject }}
           html_body: |
             **Commentateur:** @${{ github.actor }}
             **Issue:** #${{ github.event.issue.number }} – ${{ github.event.issue.title }}
@@ -38,5 +92,5 @@ jobs:
 
             ---
 
-            ${{ github.event.comment.body }}
+            ${{ steps.filter.outputs.body }}
           convert_markdown: true
