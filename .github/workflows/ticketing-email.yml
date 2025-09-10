@@ -1,0 +1,78 @@
+name: Ticketing — Email depuis Issues
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled, assigned, unassigned]
+  issue_comment:
+    types: [created] # ajoute 'edited' si tu veux aussi sur édition
+
+jobs:
+  mail:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Version actuelle recommandée (v6, publiée en 2025)
+      # https://github.com/dawidd6/action-send-mail
+      # ------------------------------------------------
+
+      # Envoi quand c’est un événement "issues"
+      - name: Send email (issue event)
+        if: ${{ github.event_name == 'issues' }}
+        uses: dawidd6/action-send-mail@v6
+        with:
+          # Option A: paramètres SMTP séparés
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          secure: ${{ secrets.SMTP_PORT == '465' }}
+          username: ${{ secrets.SMPT_USERNAME || secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+
+          # Option B (alternative) : une seule connection_url
+          # connection_url: ${{ secrets.MAIL_CONNECTION }}
+
+          from: "Ticket Bot <${{ secrets.SMTP_USERNAME }}>"
+          to: ${{ secrets.TICKETS_TO }}
+          reply_to: "support+issue-${{ github.event.issue.number }}@tondomaine.com"
+
+          subject: "[Ticket #${{ github.event.issue.number }}] ${{ github.event.issue.title }} — ${{ github.event.action }}"
+          # Corps en Markdown auto-converti en HTML
+          html_body: |
+            **Event:** `${{ github.event.action }}`
+            **Repo:** `${{ github.repository }}`
+            **Issue:** #${{ github.event.issue.number }} – ${{ github.event.issue.title }}
+            **URL:** ${{ github.event.issue.html_url }}
+            **Auteur:** @${{ github.actor }}
+
+            ---
+
+            ${{ github.event.issue.body }}
+          convert_markdown: true
+          # recommandé avec convert_markdown
+          content_type: text/html
+
+      # Envoi quand c’est un commentaire d’issue
+      - name: Send email (issue_comment event)
+        if: ${{ github.event_name == 'issue_comment' }}
+        uses: dawidd6/action-send-mail@v6
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          secure: ${{ secrets.SMTP_PORT == '465' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+
+          from: "Ticket Bot <${{ secrets.SMTP_USERNAME }}>"
+          to: ${{ secrets.TICKETS_TO }}
+          reply_to: "support+issue-${{ github.event.issue.number }}@tondomaine.com"
+
+          subject: "[Ticket #${{ github.event.issue.number }}] Nouveau commentaire par @${{ github.actor }}"
+          html_body: |
+            **Commentateur:** @${{ github.actor }}
+            **Issue:** #${{ github.event.issue.number }} – ${{ github.event.issue.title }}
+            **URL:** ${{ github.event.comment.html_url }}
+
+            ---
+
+            ${{ github.event.comment.body }}
+          convert_markdown: true
+          content_type: text/html
