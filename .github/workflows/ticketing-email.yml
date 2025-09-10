@@ -18,8 +18,6 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const core = require('@actions/core');
-
             const raw = context.payload.comment?.body || "";
             const lines = raw.split(/\r?\n/);
 
@@ -30,7 +28,7 @@ jobs:
               if (!t) continue;
               if (mailLineIdx === -1 && /^mail\s*:/i.test(t)) { mailLineIdx = i; continue; }
               if (objetLineIdx === -1 && /^(objet|sujet|subject)\s*:/i.test(t)) { objetLineIdx = i; continue; }
-              if (mailLineIdx !== -1 || objetLineIdx !== -1) break; // on s'arrête dès qu'on a trouvé une directive
+              if (mailLineIdx !== -1 || objetLineIdx !== -1) break;
             }
 
             if (mailLineIdx === -1) {
@@ -45,7 +43,7 @@ jobs:
             const destRaw = getVal(lines[mailLineIdx] || "");
             const subjectRaw = objetLineIdx !== -1 ? getVal(lines[objetLineIdx] || "") : "";
 
-            // Corps = tout après la dernière directive (mail/objet), blancs initiaux retirés
+            // Corps = tout après la dernière directive (mail/objet)
             const startBody = Math.max(mailLineIdx, objetLineIdx) + 1;
             const body = lines.slice(startBody).join('\n').trim() || '(pas de contenu)';
 
@@ -76,7 +74,7 @@ jobs:
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
-          secure: ${{ secrets.SMTP_PORT == '465' }}
+          secure: ${{ secrets.SMTP_PORT == '465' }}   # ou force true/false selon ton port
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
 
